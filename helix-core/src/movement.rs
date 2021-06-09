@@ -84,48 +84,80 @@ pub fn move_vertically(
 }
 
 pub fn move_next_word_start(slice: RopeSlice, range: Range, count: usize) -> Range {
-    let movement = |range: Range| -> Option<Range> {
+    let movement = |range: Range| -> Result<Range, Range> {
         let (characters, _) = enumerated_chars(&slice, range.head);
-        let new_head = characters.clone().skip(1).end_of_block()?;
+        let new_head = characters.clone().skip(1).end_of_block().ok_or(range)?;
         let new_anchor = if characters.clone().at_boundary() {
-            characters.clone().skip(1).skip_newlines().position()?
+            characters
+                .clone()
+                .skip(1)
+                .skip_newlines()
+                .position()
+                .ok_or(range)?
         } else {
-            characters.skip_newlines().position()?
+            characters.skip_newlines().position().ok_or(range)?
         };
 
-        (range.head != new_head).then(|| Range::new(new_anchor, new_head))
+        (range.head != new_head)
+            .then(|| Range::new(new_anchor, new_head))
+            .ok_or(range)
     };
-    (0..count).fold(range, |range, _| movement(range).unwrap_or(range))
+    (0..count).fold(range, |range, _| {
+        movement(range).unwrap_or_else(|last_range| last_range)
+    })
 }
 
 pub fn move_prev_word_start(slice: RopeSlice, range: Range, count: usize) -> Range {
-    let movement = |range: Range| -> Option<Range> {
+    let movement = |range: Range| -> Result<Range, Range> {
         let (_, backwards) = enumerated_chars(&slice, range.head);
-        let new_head = backwards.clone().skip(1).skip_newlines().end_of_word()?;
+        let new_head = backwards
+            .clone()
+            .skip(1)
+            .skip_newlines()
+            .end_of_word()
+            .ok_or(range)?;
         let new_anchor = if backwards.clone().at_boundary() {
-            backwards.clone().skip(1).skip_newlines().position()?
+            backwards
+                .clone()
+                .skip(1)
+                .skip_newlines()
+                .position()
+                .ok_or(range)?
         } else {
-            backwards.skip_newlines().position()?
+            backwards.skip_newlines().position().ok_or(range)?
         };
 
-        (range.head != new_head).then(|| Range::new(new_anchor, new_head))
+        (range.head != new_head)
+            .then(|| Range::new(new_anchor, new_head))
+            .ok_or(range)
     };
-    (0..count).fold(range, |range, _| movement(range).unwrap_or(range))
+    (0..count).fold(range, |range, _| {
+        movement(range).unwrap_or_else(|last_range| last_range)
+    })
 }
 
 pub fn move_next_word_end(slice: RopeSlice, range: Range, count: usize) -> Range {
-    let movement = |range: Range| -> Option<Range> {
+    let movement = |range: Range| -> Result<Range, Range> {
         let (characters, _) = enumerated_chars(&slice, range.head);
-        let new_head = characters.clone().skip(1).end_of_word()?;
+        let new_head = characters.clone().skip(1).end_of_word().ok_or(range)?;
         let new_anchor = if characters.clone().at_boundary() {
-            characters.clone().skip(1).skip_newlines().position()?
+            characters
+                .clone()
+                .skip(1)
+                .skip_newlines()
+                .position()
+                .ok_or(range)?
         } else {
-            characters.skip_newlines().position()?
+            characters.skip_newlines().position().ok_or(range)?
         };
 
-        (range.head != new_head).then(|| Range::new(new_anchor, new_head))
+        (range.head != new_head)
+            .then(|| Range::new(new_anchor, new_head))
+            .ok_or(range)
     };
-    (0..count).fold(range, |range, _| movement(range).unwrap_or(range))
+    (0..count).fold(range, |range, _| {
+        movement(range).unwrap_or_else(|last_range| last_range)
+    })
 }
 
 // Helper functions for iterators over (usize, char) tuples
@@ -194,13 +226,13 @@ pub fn enumerated_chars<'a>(
     index: usize,
 ) -> (
     impl Iterator<Item = (usize, char)> + 'a + Clone,
-    impl Iterator<Item = (usize, char)> + 'a + Clone
+    impl Iterator<Item = (usize, char)> + 'a + Clone,
 ) {
     // Single call to the API to ensure everything after is a cheap clone.
     let mut chars = slice.chars_at(index);
     let forward = (index..).zip(chars.clone());
     chars.next();
-    let backwards = (0..=index).rev().zip(iter::from_fn( move || chars.prev()));
+    let backwards = (0..=index).rev().zip(iter::from_fn(move || chars.prev()));
     (forward, backwards)
 }
 

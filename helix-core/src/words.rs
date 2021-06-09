@@ -1,12 +1,14 @@
-use crate::movement::{EnumeratedCharHelpers, enumerated_chars};
+use crate::movement::{enumerated_chars, EnumeratedCharHelpers};
 use ropey::RopeSlice;
 
 #[must_use]
 pub fn nth_prev_word_boundary(slice: RopeSlice, index: usize, count: usize) -> usize {
-    (0..count).try_fold(index, |index, _| {
-    let (_, backwards) = enumerated_chars(&slice, index);
-        backwards.skip_newlines().end_of_word()
-    }).unwrap_or(0)
+    (0..count)
+        .try_fold(index, |index, _| {
+            let (_, backwards) = enumerated_chars(&slice, index);
+            backwards.skip_newlines().end_of_word()
+        })
+        .unwrap_or(0)
 }
 
 #[test]
