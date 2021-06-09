@@ -1,4 +1,4 @@
-use crate::movement::{EnumeratedCharHelpers, Category, SliceIndexHelpers, backwards_skip_while, categorize, enumerated_chars, is_end_of_line, is_punctuation, is_word};
+use crate::movement::{EnumeratedCharHelpers, enumerated_chars};
 use ropey::RopeSlice;
 
 #[must_use]

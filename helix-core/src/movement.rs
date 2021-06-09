@@ -87,7 +87,7 @@ pub fn move_next_word_start(slice: RopeSlice, range: Range, count: usize) -> Ran
     let movement = |range: Range| -> Option<Range> {
         let (characters, _) = enumerated_chars(&slice, range.head);
         let new_head = characters.clone().skip(1).end_of_block()?;
-        let new_anchor = if characters.clone().is_boundary() {
+        let new_anchor = if characters.clone().at_boundary() {
             characters.clone().skip(1).skip_newlines().position()?
         } else {
             characters.skip_newlines().position()?
@@ -102,7 +102,7 @@ pub fn move_prev_word_start(slice: RopeSlice, range: Range, count: usize) -> Ran
     let movement = |range: Range| -> Option<Range> {
         let (_, backwards) = enumerated_chars(&slice, range.head);
         let new_head = backwards.clone().skip(1).skip_newlines().end_of_word()?;
-        let new_anchor = if backwards.clone().is_boundary() {
+        let new_anchor = if backwards.clone().at_boundary() {
             backwards.clone().skip(1).skip_newlines().position()?
         } else {
             backwards.skip_newlines().position()?
@@ -117,7 +117,7 @@ pub fn move_next_word_end(slice: RopeSlice, range: Range, count: usize) -> Range
     let movement = |range: Range| -> Option<Range> {
         let (characters, _) = enumerated_chars(&slice, range.head);
         let new_head = characters.clone().skip(1).end_of_word()?;
-        let new_anchor = if characters.clone().is_boundary() {
+        let new_anchor = if characters.clone().at_boundary() {
             characters.clone().skip(1).skip_newlines().position()?
         } else {
             characters.skip_newlines().position()?
@@ -137,16 +137,18 @@ pub trait EnumeratedCharHelpers: Sized {
     fn end_of_word(self) -> Option<usize>;
     fn position(self) -> Option<usize>;
     fn last_position(self) -> Option<usize>;
-    fn is_boundary(self) -> bool;
-    fn skip_newlines(self) -> SkipWhile<Self, for<'r> fn(&'r (usize, char)) -> bool>;
+    fn at_boundary(self) -> bool;
+    fn skip_newlines(self) -> SkipWhile<Self, NewlineCheck>;
 }
+
+pub type NewlineCheck = for<'r> fn(&'r (usize, char)) -> bool;
 
 impl<I: Clone + Iterator<Item = (usize, char)>> EnumeratedCharHelpers for I {
     fn end_of_block(self) -> Option<usize> {
         let after_newline = self.clone().skip_newlines();
         let mut pairs = after_newline.clone().zip(after_newline.skip(1));
         pairs
-            .find_map(|((a_pos, a), (b_pos, b))| {
+            .find_map(|((a_pos, a), (_, b))| {
                 ((categorize(a) != categorize(b)) && (is_end_of_line(b) || !b.is_whitespace()))
                     .then(|| a_pos)
             })
@@ -157,14 +159,14 @@ impl<I: Clone + Iterator<Item = (usize, char)>> EnumeratedCharHelpers for I {
         let after_newline = self.clone().skip_while(|(_, c)| is_end_of_line(*c));
         let mut pairs = after_newline.clone().zip(after_newline.skip(1));
         pairs
-            .find_map(|((a_pos, a), (b_pos, b))| {
+            .find_map(|((a_pos, a), (_, b))| {
                 ((categorize(a) != categorize(b)) && (!a.is_whitespace() || is_end_of_line(b)))
                     .then(|| a_pos)
             })
             .or_else(|| self.last_position())
     }
 
-    fn last_position(mut self) -> Option<usize> {
+    fn last_position(self) -> Option<usize> {
         self.last().map(|(pos, _)| pos)
     }
 
@@ -172,15 +174,15 @@ impl<I: Clone + Iterator<Item = (usize, char)>> EnumeratedCharHelpers for I {
         self.next().map(|(pos, _)| pos)
     }
 
-    fn is_boundary(mut self) -> bool {
-        match (self.next(), self.next()) {
-            (Some((_, a)), Some((_, b))) if categorize(a) != categorize(b) => true,
-            _ => false,
-        }
+    fn at_boundary(mut self) -> bool {
+        matches!(
+            (self.next(), self.next()),
+            (Some((_, a)), Some((_, b))) if categorize(a) != categorize(b)
+        )
     }
 
-    fn skip_newlines(self) -> SkipWhile<Self, for<'r> fn(&'r (usize, char)) -> bool> {
-        self.skip_while(|(i, c)| is_end_of_line(*c))
+    fn skip_newlines(self) -> SkipWhile<Self, NewlineCheck> {
+        self.skip_while(|(_, c)| is_end_of_line(*c))
     }
 }
 
@@ -200,108 +202,6 @@ pub fn enumerated_chars<'a>(
     chars.next();
     let backwards = (0..=index).rev().zip(iter::from_fn( move || chars.prev()));
     (forward, backwards)
-}
-
-/// Private helpers to help manipulate slice indices
-pub trait SliceIndexHelpers {
-    fn outside(&self, slice: RopeSlice) -> bool;
-    fn inside(&self, slice: RopeSlice) -> bool;
-    /// The next character after this belongs
-    /// to a different `Category`
-    fn is_boundary(&self, slice: RopeSlice) -> bool;
-    fn category(&self, slice: RopeSlice) -> Option<Category>;
-    /// Returns the start of a word/punctuation group followed by any amount of whitespace.
-    fn start_of_block(&self, slice: RopeSlice) -> Self;
-    /// Returns the end of a word/punctuation group followed by any amount of whitespace.
-    fn end_of_block(&self, slice: RopeSlice) -> Self;
-    /// Returns the end of a word/punctuation group.
-    fn end_of_word(&self, slice: RopeSlice) -> Self;
-    fn skip_newlines(&self, slice: RopeSlice) -> Self;
-    fn backwards_skip_newlines(&self, slice: RopeSlice) -> Self;
-    fn is_whitespace(&self, slice: RopeSlice) -> bool;
-    fn is_end_of_line(&self, slice: RopeSlice) -> bool;
-}
-
-impl SliceIndexHelpers for usize {
-    fn inside(&self, slice: RopeSlice) -> bool {
-        *self < slice.len_chars()
-    }
-
-    fn outside(&self, slice: RopeSlice) -> bool {
-        !self.inside(slice)
-    }
-
-    fn is_boundary(&self, slice: RopeSlice) -> bool {
-        (self + 1).inside(slice)
-            && (categorize(slice.char(*self)) != categorize(slice.char(self + 1)))
-    }
-
-    fn category(&self, slice: RopeSlice) -> Option<Category> {
-        self.inside(slice).then(|| categorize(slice.char(*self)))
-    }
-
-    fn end_of_word(&self, slice: RopeSlice) -> Self {
-        // Scan the entire slice
-        (*self..slice.len_chars())
-            // Skip any initial newlines, as they must be skipped over for
-            // the purposes of word movement
-            .skip_while(|i| is_end_of_line(slice.char(*i)))
-            // Find the first boundary that doesn't start from whitespace
-            .find(|pos| {
-                pos.is_boundary(slice)
-                    && (!pos.is_whitespace(slice) || (pos + 1).is_end_of_line(slice))
-            })
-            // If not found, return the end of the range
-            .unwrap_or_else(|| slice.len_chars().saturating_sub(1))
-    }
-
-    fn end_of_block(&self, slice: RopeSlice) -> Self {
-        // Scan the entire slice
-        (*self..slice.len_chars())
-            // Skip any initial newlines, as they must be skipped over for
-            // the purposes of word movement
-            .skip_while(|pos| pos.is_end_of_line(slice))
-            // Find the first boundary that doesn't go into whitespace or EOL
-            .find(|pos| {
-                pos.is_boundary(slice)
-                    && ((pos + 1).is_end_of_line(slice) || !slice.char(*pos + 1).is_whitespace())
-            })
-            // If not found, return the end of the range
-            .unwrap_or_else(|| slice.len_chars().saturating_sub(1))
-    }
-
-    fn start_of_block(&self, slice: RopeSlice) -> Self {
-        // Scan the entire slice backwards, skipping any initial newlines,
-        // as they must be skipped over for the purposes of word movement
-        (0..=self.backwards_skip_newlines(slice))
-            .rev()
-            // Skip any and all whitespace that isn't preceded by newlines
-            // (Whitespace preceded by a newline forms a block)
-            .skip_while(|pos| {
-                is_strict_whitespace(slice.char(*pos))
-                    && !pos.saturating_sub(1).is_end_of_line(slice)
-            })
-            // Find the first boundary
-            .find(|pos| pos.saturating_sub(1).is_boundary(slice))
-            .unwrap_or(0)
-    }
-
-    fn skip_newlines(&self, slice: RopeSlice) -> Self {
-        skip_while(slice, *self, is_end_of_line)
-            .unwrap_or_else(|| slice.len_chars().saturating_sub(1))
-    }
-
-    fn backwards_skip_newlines(&self, slice: RopeSlice) -> Self {
-        backwards_skip_while(slice, *self, is_end_of_line).unwrap_or(0)
-    }
-
-    fn is_whitespace(&self, slice: RopeSlice) -> bool {
-        slice.char(*self).is_whitespace()
-    }
-
-    fn is_end_of_line(&self, slice: RopeSlice) -> bool {
-        is_end_of_line(slice.char(*self))
-    }
 }
 
 #[inline]
@@ -372,12 +272,8 @@ pub fn skip_while<F>(slice: RopeSlice, pos: usize, fun: F) -> Option<usize>
 where
     F: Fn(char) -> bool,
 {
-    if pos.outside(slice) {
-        None
-    } else {
-        let mut chars = slice.chars_at(pos).enumerate();
-        chars.find_map(|(i, c)| if !fun(c) { Some(pos + i) } else { None })
-    }
+    let mut chars = slice.chars_at(pos).enumerate();
+    chars.find_map(|(i, c)| if !fun(c) { Some(pos + i) } else { None })
 }
 
 #[inline]
@@ -388,19 +284,15 @@ pub fn backwards_skip_while<F>(slice: RopeSlice, pos: usize, fun: F) -> Option<u
 where
     F: Fn(char) -> bool,
 {
-    if pos.outside(slice) {
-        None
-    } else {
-        let mut chars_starting_from_next = slice.chars_at(pos + 1);
-        let mut backwards = iter::from_fn(|| chars_starting_from_next.prev()).enumerate();
-        backwards.find_map(|(i, c)| {
-            if !fun(c) {
-                Some(pos.saturating_sub(i))
-            } else {
-                None
-            }
-        })
-    }
+    let mut chars_starting_from_next = slice.chars_at(pos + 1);
+    let mut backwards = iter::from_fn(|| chars_starting_from_next.prev()).enumerate();
+    backwards.find_map(|(i, c)| {
+        if !fun(c) {
+            Some(pos.saturating_sub(i))
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]
@@ -418,11 +310,6 @@ mod test {
         which\n\
         is merely alphabetic\n\
         and whitespaced\n\
-    ";
-
-    const PUNCTUATION_SAMPLE: &str = "\
-        Multiline, example    with,, some;
-        ... punctuation!    \n
     ";
 
     const MULTIBYTE_CHARACTER_SAMPLE: &str = "\
@@ -605,12 +492,6 @@ mod test {
             assert_eq!(coords_at_pos(slice, range.head), coordinates.into());
             assert_eq!(range.head, range.anchor);
         }
-    }
-
-    enum Motion {
-        NextStart(usize),
-        NextEnd(usize),
-        PrevStart(usize),
     }
 
     #[test]
