@@ -1,4 +1,4 @@
-use std::iter;
+use std::iter::{self, SkipWhile};
 
 use crate::{
     coords_at_pos,
@@ -84,61 +84,123 @@ pub fn move_vertically(
 }
 
 pub fn move_next_word_start(slice: RopeSlice, range: Range, count: usize) -> Range {
-    let movement = |range: Range| -> Range {
-        let after_head = (range.head + 1).skip_newlines(slice);
-        (after_head + 1)
-            .inside(slice)
-            .then(|| {
-                let new_anchor = if range.head.is_boundary(slice) {
-                    after_head
-                } else {
-                    range.head.skip_newlines(slice)
-                };
-                let new_head = (range.head + 1).end_of_block(slice);
-                Range::new(new_anchor, new_head)
-            })
-            .unwrap_or(range)
+    let movement = |range: Range| -> Option<Range> {
+        let (characters, _) = enumerated_chars(&slice, range.head);
+        let new_head = characters.clone().skip(1).end_of_block()?;
+        let new_anchor = if characters.clone().is_boundary() {
+            characters.clone().skip(1).skip_newlines().position()?
+        } else {
+            characters.skip_newlines().position()?
+        };
+
+        (range.head != new_head).then(|| Range::new(new_anchor, new_head))
     };
-    (0..count).fold(range, |range, _| movement(range))
+    (0..count).fold(range, |range, _| movement(range).unwrap_or(range))
 }
 
 pub fn move_prev_word_start(slice: RopeSlice, range: Range, count: usize) -> Range {
-    let movement = |range: Range| -> Range {
-        (range.head > 0 && range.head.inside(slice))
-            .then(|| {
-                let new_anchor = if range.head.saturating_sub(1).is_boundary(slice) {
-                    (range.head.saturating_sub(1)).backwards_skip_newlines(slice)
-                } else {
-                    range.head.backwards_skip_newlines(slice)
-                };
-                let new_head = range.head.saturating_sub(1).start_of_block(slice);
-                Range::new(new_anchor, new_head)
-            })
-            .unwrap_or(range)
+    let movement = |range: Range| -> Option<Range> {
+        let (_, backwards) = enumerated_chars(&slice, range.head);
+        let new_head = backwards.clone().skip(1).skip_newlines().end_of_word()?;
+        let new_anchor = if backwards.clone().is_boundary() {
+            backwards.clone().skip(1).skip_newlines().position()?
+        } else {
+            backwards.skip_newlines().position()?
+        };
+
+        (range.head != new_head).then(|| Range::new(new_anchor, new_head))
     };
-    (0..count).fold(range, |range, _| movement(range))
+    (0..count).fold(range, |range, _| movement(range).unwrap_or(range))
 }
 
 pub fn move_next_word_end(slice: RopeSlice, range: Range, count: usize) -> Range {
-    let movement = |range: Range| -> Range {
-        let after_head = (range.head + 1).skip_newlines(slice);
-        (after_head + 1)
-            .inside(slice)
-            .then(|| {
-                let new_anchor = if range.head.is_boundary(slice) {
-                    after_head
-                } else {
-                    range.head.skip_newlines(slice)
-                };
-                let new_head = (range.head + 1).end_of_word(slice);
-                Range::new(new_anchor, new_head)
-            })
-            .unwrap_or(range)
+    let movement = |range: Range| -> Option<Range> {
+        let (characters, _) = enumerated_chars(&slice, range.head);
+        let new_head = characters.clone().skip(1).end_of_word()?;
+        let new_anchor = if characters.clone().is_boundary() {
+            characters.clone().skip(1).skip_newlines().position()?
+        } else {
+            characters.skip_newlines().position()?
+        };
+
+        (range.head != new_head).then(|| Range::new(new_anchor, new_head))
     };
-    (0..count).fold(range, |range, _| movement(range))
+    (0..count).fold(range, |range, _| movement(range).unwrap_or(range))
+}
+
+// Helper functions for iterators over (usize, char) tuples
+// (necessary to iterate over ropes efficiently while retaining
+// the index).
+pub trait EnumeratedCharHelpers: Sized {
+    //Returns the index at the current [word/punctuation + whitespace] group
+    fn end_of_block(self) -> Option<usize>;
+    fn end_of_word(self) -> Option<usize>;
+    fn position(self) -> Option<usize>;
+    fn last_position(self) -> Option<usize>;
+    fn is_boundary(self) -> bool;
+    fn skip_newlines(self) -> SkipWhile<Self, for<'r> fn(&'r (usize, char)) -> bool>;
+}
+
+impl<I: Clone + Iterator<Item = (usize, char)>> EnumeratedCharHelpers for I {
+    fn end_of_block(self) -> Option<usize> {
+        let after_newline = self.clone().skip_newlines();
+        let mut pairs = after_newline.clone().zip(after_newline.skip(1));
+        pairs
+            .find_map(|((a_pos, a), (b_pos, b))| {
+                ((categorize(a) != categorize(b)) && (is_end_of_line(b) || !b.is_whitespace()))
+                    .then(|| a_pos)
+            })
+            .or_else(|| self.last_position())
+    }
+
+    fn end_of_word(self) -> Option<usize> {
+        let after_newline = self.clone().skip_while(|(_, c)| is_end_of_line(*c));
+        let mut pairs = after_newline.clone().zip(after_newline.skip(1));
+        pairs
+            .find_map(|((a_pos, a), (b_pos, b))| {
+                ((categorize(a) != categorize(b)) && (!a.is_whitespace() || is_end_of_line(b)))
+                    .then(|| a_pos)
+            })
+            .or_else(|| self.last_position())
+    }
+
+    fn last_position(mut self) -> Option<usize> {
+        self.last().map(|(pos, _)| pos)
+    }
+
+    fn position(mut self) -> Option<usize> {
+        self.next().map(|(pos, _)| pos)
+    }
+
+    fn is_boundary(mut self) -> bool {
+        match (self.next(), self.next()) {
+            (Some((_, a)), Some((_, b))) if categorize(a) != categorize(b) => true,
+            _ => false,
+        }
+    }
+
+    fn skip_newlines(self) -> SkipWhile<Self, for<'r> fn(&'r (usize, char)) -> bool> {
+        self.skip_while(|(i, c)| is_end_of_line(*c))
+    }
 }
 
 // ---- util ------------
+/// Returns a forward and backwards iterator over (usize, char), where the first element
+/// always corresponds to the absolute index of the character in the slice.
+pub fn enumerated_chars<'a>(
+    slice: &'a RopeSlice,
+    index: usize,
+) -> (
+    impl Iterator<Item = (usize, char)> + 'a + Clone,
+    impl Iterator<Item = (usize, char)> + 'a + Clone
+) {
+    // Single call to the API to ensure everything after is a cheap clone.
+    let mut chars = slice.chars_at(index);
+    let forward = (index..).zip(chars.clone());
+    chars.next();
+    let backwards = (0..=index).rev().zip(iter::from_fn( move || chars.prev()));
+    (forward, backwards)
+}
 
 /// Private helpers to help manipulate slice indices
 pub trait SliceIndexHelpers {
@@ -552,6 +614,24 @@ mod test {
     }
 
     #[test]
+    #[should_panic]
+    fn nonsensical_ranges_panic_on_forward_movement_attempt_in_debug_mode() {
+        move_next_word_start(Rope::from("Sample").slice(..), Range::point(99999999), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn nonsensical_ranges_panic_on_forward_to_end_movement_attempt_in_debug_mode() {
+        move_next_word_end(Rope::from("Sample").slice(..), Range::point(99999999), 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn nonsensical_ranges_panic_on_backwards_movement_attempt_in_debug_mode() {
+        move_prev_word_start(Rope::from("Sample").slice(..), Range::point(99999999), 1);
+    }
+
+    #[test]
     fn test_behaviour_when_moving_to_start_of_next_words() {
         let tests = array::IntoIter::new([
             ("Basic forward motion stops at the first space",
@@ -603,12 +683,6 @@ mod test {
             ("Excessive motions are performed partially",
                 vec![
                     (999, Range::new(0, 0), Range::new(32, 40)),
-                ]),
-            // TODO Consider whether this is desirable. Rather than silently failing,
-            // it may be worth improving the API so it returns expressive results.
-            ("Attempting to move from outside bounds fails without panic",
-                vec![
-                    (1, Range::new(9999, 9999), Range::new(9999, 9999)),
                 ]),
             ("", // Edge case of moving forward in empty string
                 vec![
@@ -692,19 +766,13 @@ mod test {
                 vec![
                     (999, Range::new(40, 40), Range::new(9, 0)),
                 ]),
-            // TODO Consider whether this is desirable. Rather than silently failing,
-            // it may be worth improving the API so it returns expressive results.
-            ("Attempting to move from outside bounds fails without panic",
-                vec![
-                    (1, Range::new(9999, 9999), Range::new(9999, 9999)),
-                ]),
             ("", // Edge case of moving backwards in empty string
                 vec![
                     (1, Range::new(0, 0), Range::new(0, 0)),
                 ]),
             ("\n\n\n\n\n", // Edge case of moving backwards in all newlines
                 vec![
-                    (1, Range::new(0, 3), Range::new(0, 0)),
+                    (1, Range::new(0, 0), Range::new(0, 0)),
                 ]),
             ("   \n   \nJumping back through alternated space blocks and newlines selects the space blocks",
                 vec![
@@ -777,12 +845,6 @@ mod test {
             ("Excessive motions are performed partially",
                 vec![
                     (999, Range::new(0, 0), Range::new(31, 40)),
-                ]),
-            // TODO Consider whether this is desirable. Rather than silently failing,
-            // it may be worth improving the API so it returns expressive results.
-            ("Attempting to move from outside bounds fails without panic",
-                vec![
-                    (1, Range::new(9999, 9999), Range::new(9999, 9999)),
                 ]),
             ("", // Edge case of moving forward in empty string
                 vec![
