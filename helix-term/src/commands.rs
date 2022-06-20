@@ -4628,8 +4628,6 @@ fn replay_macro(cx: &mut Context) {
         return;
     }
 
-    cx.editor.macro_replaying.push(reg);
-
     let keys: Vec<KeyEvent> = if let Some([keys_str]) = cx.editor.registers.read(reg) {
         match helix_view::input::parse_macro(keys_str) {
             Ok(keys) => keys,
@@ -4642,6 +4640,8 @@ fn replay_macro(cx: &mut Context) {
         cx.editor.set_error(format!("Register [{}] empty", reg));
         return;
     };
+
+    cx.editor.macro_replaying.push(reg);
 
     let count = cx.count();
     cx.callback = Some(Box::new(move |compositor, cx| {
